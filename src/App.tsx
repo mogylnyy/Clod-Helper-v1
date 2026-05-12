@@ -68,6 +68,14 @@ function App() {
           onDone={() => {
             window.close();
           }}
+          onRestartWithCode={
+            mode === "desktop"
+              ? () => {
+                  setMode("code");
+                  setStep("mode");
+                }
+              : undefined
+          }
         />
       )}
     </WizardShell>

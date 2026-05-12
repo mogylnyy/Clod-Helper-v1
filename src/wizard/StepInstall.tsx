@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { AnimatePresence, motion } from "framer-motion";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import {
   Loader2,
   CheckCircle2,
@@ -8,6 +9,9 @@ import {
   Terminal as TerminalIcon,
   ChevronDown,
   ChevronRight,
+  Download,
+  AlertTriangle,
+  ArrowRight,
 } from "lucide-react";
 import { Button } from "../components/Button";
 import type { InstallMode } from "../lib/types";
@@ -18,24 +22,37 @@ const VERBOSE_PREFIX = "__verbose__:";
 // How long between revealing successive log lines (ms). Lower = faster
 // typewriter. The Rust side already streams live; this just paces lines that
 // arrive in tight bursts so the UI feels alive instead of dumping a wall.
-const REVEAL_INTERVAL_MS = 55;
+const REVEAL_INTERVAL_MS = 110;
 
 interface Props {
   mode: InstallMode;
   proxyUrl: string;
   onBack: () => void;
   onDone: () => void;
+  onRestartWithCode?: () => void;
 }
 
-type Status = "idle" | "running" | "done" | "error";
+type Status =
+  | "idle"
+  | "running"
+  | "awaiting-desktop"
+  | "done"
+  | "error";
 
-export function StepInstall({ mode, proxyUrl, onBack, onDone }: Props) {
+export function StepInstall({
+  mode,
+  proxyUrl,
+  onBack,
+  onDone,
+  onRestartWithCode,
+}: Props) {
   const [status, setStatus] = useState<Status>("idle");
   // pending = raw events from backend, revealed = paced output for the UI
   const pendingRef = useRef<string[]>([]);
   const [revealed, setRevealed] = useState<string[]>([]);
   const [verbose, setVerbose] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const desktopMissingRef = useRef(false);
   const logRef = useRef<HTMLDivElement>(null);
 
   const visibleLog = useMemo(() => {
@@ -47,23 +64,30 @@ export function StepInstall({ mode, proxyUrl, onBack, onDone }: Props) {
     return revealed.filter((line) => !line.startsWith(VERBOSE_PREFIX));
   }, [revealed, verbose]);
 
-  // Subscribe to backend log events — push into the pending queue.
+  // Subscribe to backend events.
   useEffect(() => {
     let unlistenLog: UnlistenFn | null = null;
+    let unlistenMissing: UnlistenFn | null = null;
     let cancelled = false;
     (async () => {
-      const u = await listen<string>("install:log", (e) => {
+      const uLog = await listen<string>("install:log", (e) => {
         pendingRef.current.push(e.payload);
       });
+      const uMiss = await listen("install:claude_desktop_missing", () => {
+        desktopMissingRef.current = true;
+      });
       if (cancelled) {
-        u();
+        uLog();
+        uMiss();
       } else {
-        unlistenLog = u;
+        unlistenLog = uLog;
+        unlistenMissing = uMiss;
       }
     })();
     return () => {
       cancelled = true;
       unlistenLog?.();
+      unlistenMissing?.();
     };
   }, []);
 
@@ -91,12 +115,36 @@ export function StepInstall({ mode, proxyUrl, onBack, onDone }: Props) {
     setError(null);
     setRevealed([]);
     pendingRef.current = [];
+    desktopMissingRef.current = false;
     try {
       await runInstall({ mode, proxyUrl });
       // Don't flip to "done" until the typewriter has caught up — otherwise
       // the success banner appears while the log is still scrolling.
       await drainPending(pendingRef);
-      setStatus("done");
+      // Desktop-mode and Claude Desktop wasn't found → pause for the user
+      // to install it, then they hit "Продолжить" and we re-run the script.
+      const needsDesktopPause =
+        (mode === "desktop" || mode === "both") && desktopMissingRef.current;
+      setStatus(needsDesktopPause ? "awaiting-desktop" : "done");
+    } catch (e: any) {
+      await drainPending(pendingRef);
+      setError(typeof e === "string" ? e : (e?.message ?? "Неизвестная ошибка"));
+      setStatus("error");
+    }
+  }
+
+  async function handleContinueAfterDesktopInstall() {
+    // Append a "5/5 retry" header to the existing log instead of clearing it.
+    pendingRef.current.push("");
+    pendingRef.current.push("▸ Повторная установка ярлыка…");
+    desktopMissingRef.current = false;
+    setStatus("running");
+    try {
+      await runInstall({ mode, proxyUrl });
+      await drainPending(pendingRef);
+      const stillMissing =
+        (mode === "desktop" || mode === "both") && desktopMissingRef.current;
+      setStatus(stillMissing ? "awaiting-desktop" : "done");
     } catch (e: any) {
       await drainPending(pendingRef);
       setError(typeof e === "string" ? e : (e?.message ?? "Неизвестная ошибка"));
@@ -109,6 +157,7 @@ export function StepInstall({ mode, proxyUrl, onBack, onDone }: Props) {
       <h2 className="text-[22px] font-semibold tracking-tight text-vb-silver">
         {status === "idle" && "Готовы поставить?"}
         {status === "running" && "Устанавливаем Claude…"}
+        {status === "awaiting-desktop" && "Нужен Claude Desktop"}
         {status === "done" && "Готово"}
         {status === "error" && "Что-то пошло не так"}
       </h2>
@@ -117,6 +166,8 @@ export function StepInstall({ mode, proxyUrl, onBack, onDone }: Props) {
           "Это займёт 1-3 минуты. Не закрывайте окно — мы покажем прогресс."}
         {status === "running" &&
           "Может возникнуть запрос от Windows — разрешите."}
+        {status === "awaiting-desktop" &&
+          "Прокси-мост уже запущен. Осталось установить само приложение Claude Desktop и мы создадим ярлык."}
         {status === "done" &&
           "Claude настроен и готов к работе. Если прокси перестанет работать — переустановите и введите новый."}
       </p>
@@ -129,7 +180,10 @@ export function StepInstall({ mode, proxyUrl, onBack, onDone }: Props) {
         </div>
       )}
 
-      {(status === "running" || status === "done" || status === "error") && (
+      {(status === "running" ||
+        status === "done" ||
+        status === "error" ||
+        status === "awaiting-desktop") && (
         <div className="mt-6 glass-card overflow-hidden">
           <div className="flex items-center justify-between gap-2 border-b border-vb-border/60 px-4 py-2.5">
             <div className="flex items-center gap-2 text-[11px] uppercase tracking-wider text-vb-silver-dim">
@@ -211,6 +265,43 @@ export function StepInstall({ mode, proxyUrl, onBack, onDone }: Props) {
         </div>
       )}
 
+      {status === "awaiting-desktop" && (
+        <motion.div
+          initial={{ opacity: 0, y: 6 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.25 }}
+          className="mt-5 rounded-2xl border border-vb-warn/40 bg-vb-warn/5 p-5"
+        >
+          <div className="flex items-start gap-3">
+            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-vb-warn/15 text-vb-warn">
+              <AlertTriangle className="h-5 w-5" strokeWidth={1.5} />
+            </div>
+            <div className="flex-1">
+              <div className="text-[15px] font-medium text-vb-silver">
+                Claude Desktop не установлен
+              </div>
+              <p className="mt-1 text-[13px] leading-relaxed text-vb-silver-dim">
+                Скачайте Claude Desktop с официального сайта и установите. Когда
+                закончите — нажмите «Продолжить», мы создадим ярлык «Claude
+                Desktop (proxy)» на рабочем столе.
+              </p>
+              <div className="mt-4 flex flex-wrap items-center gap-3">
+                <Button
+                  variant="secondary"
+                  onClick={() => openUrl("https://claude.ai/download")}
+                >
+                  <Download className="h-4 w-4" />
+                  Скачать Claude Desktop
+                </Button>
+                <Button onClick={handleContinueAfterDesktopInstall}>
+                  Продолжить
+                </Button>
+              </div>
+            </div>
+          </div>
+        </motion.div>
+      )}
+
       {status === "done" && (mode === "code" || mode === "both") && (
         <div className="mt-5 flex items-start gap-2 rounded-lg border border-vb-emerald/30 bg-vb-emerald/5 px-4 py-3 text-[13px] text-vb-silver">
           <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-vb-emerald" />
@@ -225,21 +316,37 @@ export function StepInstall({ mode, proxyUrl, onBack, onDone }: Props) {
       )}
 
       {status === "done" && mode === "desktop" && (
-        <div className="mt-5 flex items-start gap-2 rounded-lg border border-vb-emerald/30 bg-vb-emerald/5 px-4 py-3 text-[13px] text-vb-silver">
-          <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-vb-emerald" />
-          <div>
-            Bridge запущен на{" "}
-            <code className="rounded bg-vb-bg px-1.5 py-0.5 font-mono text-vb-emerald">
-              127.0.0.1:8889
-            </code>
-            . Запускайте Claude Desktop через ярлык «Claude Desktop (proxy)» с
-            рабочего стола.
+        <>
+          <div className="mt-5 flex items-start gap-2 rounded-lg border border-vb-emerald/30 bg-vb-emerald/5 px-4 py-3 text-[13px] text-vb-silver">
+            <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-vb-emerald" />
+            <div>
+              Bridge запущен на{" "}
+              <code className="rounded bg-vb-bg px-1.5 py-0.5 font-mono text-vb-emerald">
+                127.0.0.1:8889
+              </code>
+              . Запускайте Claude Desktop через ярлык «Claude Desktop (proxy)»
+              с рабочего стола.
+            </div>
           </div>
-        </div>
+          {onRestartWithCode && (
+            <button
+              type="button"
+              onClick={onRestartWithCode}
+              className="mt-3 inline-flex items-center gap-1.5 text-[12px] text-vb-silver-dim transition-colors hover:text-vb-silver"
+            >
+              Поставить Claude в терминале тоже
+              <ArrowRight className="h-3 w-3" />
+            </button>
+          )}
+        </>
       )}
 
       <div className="mt-8 flex items-center justify-between">
-        <Button variant="ghost" onClick={onBack} disabled={status === "running"}>
+        <Button
+          variant="ghost"
+          onClick={onBack}
+          disabled={status === "running" || status === "awaiting-desktop"}
+        >
           Назад
         </Button>
         {status === "done" && <Button onClick={onDone}>Закрыть</Button>}

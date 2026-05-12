@@ -327,6 +327,11 @@ async fn run_ps_script(
                     if let Ok(mut n) = count.lock() {
                         *n += 1;
                     }
+                    // Watch for the "Claude Desktop not found" marker so the
+                    // UI can pause for the user to install it.
+                    if line.contains("Claude Desktop не найден") {
+                        let _ = app_inner.emit("install:claude_desktop_missing", ());
+                    }
                     log_line(&log_inner, &line);
                     let _ = app_inner.emit("install:log", line);
                 }
