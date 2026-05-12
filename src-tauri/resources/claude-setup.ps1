@@ -232,8 +232,32 @@ if ($existingClaude) {
 $env:HTTPS_PROXY = $ProxyUrl
 $env:HTTP_PROXY = $ProxyUrl
 
+Write-Host "        Скачиваю с npm-registry (~30-90 секунд)..." -ForegroundColor DarkGray
+
 try {
-    & npm install -g "@anthropic-ai/claude-code" 2>&1 | Out-Null
+    # Стримим вывод npm в реальном времени — иначе скрипт молчит 1-2 минуты
+    # и юзер думает что зависло. --loglevel=http даёт периодические строки
+    # о ходе скачивания / распаковки.
+    & npm install -g "@anthropic-ai/claude-code" --loglevel=http 2>&1 | ForEach-Object {
+        $line = $_.ToString().Trim()
+        if ($line) {
+            # Сокращаем npm-шум до читаемых маркеров.
+            if ($line -match '^npm http fetch GET (\d+) https?://[^/]+/([^/]+/[^\s]+)') {
+                Write-Host "        ↓ скачиваю $($matches[2])" -ForegroundColor DarkGray
+            } elseif ($line -match '^added \d+ packages?') {
+                Write-Host "        ✓ $line" -ForegroundColor Green
+            } elseif ($line -match '^changed \d+ packages?') {
+                Write-Host "        ✓ $line" -ForegroundColor Green
+            } elseif ($line -match '^up to date') {
+                Write-Host "        ✓ уже последняя версия" -ForegroundColor Green
+            } elseif ($line -match '^npm (warn|WARN)') {
+                # пропускаем шум warning'ов
+            } elseif ($line -match '^npm (err|ERR)') {
+                Write-Host "        $line" -ForegroundColor Red
+            }
+            # Остальное (npm http 200, fetch, etc) тоже пропускаем чтоб не засорять журнал.
+        }
+    }
     if ($LASTEXITCODE -ne 0) { throw "npm install exit code $LASTEXITCODE" }
     Write-Ok "установлен"
 } catch {

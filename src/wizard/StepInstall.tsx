@@ -94,12 +94,24 @@ export function StepInstall({
   // Reveal one line at a time from pending → revealed. If the pending queue
   // backs up (script dumped 40 lines at once), we still pace at the same
   // interval so the user gets a feel of progress.
+  const lastLineAtRef = useRef<number>(0);
+  const [stalled, setStalled] = useState(false);
   useEffect(() => {
     if (status !== "running" && status !== "done" && status !== "error") return;
+    lastLineAtRef.current = Date.now();
+    setStalled(false);
     const t = window.setInterval(() => {
-      if (pendingRef.current.length === 0) return;
+      if (pendingRef.current.length === 0) {
+        // No new lines for a while — show "still working" reassurance.
+        if (status === "running" && Date.now() - lastLineAtRef.current > 20000) {
+          setStalled(true);
+        }
+        return;
+      }
       const next = pendingRef.current.shift()!;
       setRevealed((prev) => [...prev, next]);
+      lastLineAtRef.current = Date.now();
+      setStalled(false);
     }, REVEAL_INTERVAL_MS);
     return () => window.clearInterval(t);
   }, [status]);
@@ -254,6 +266,23 @@ export function StepInstall({
           </div>
         </div>
       )}
+
+      <AnimatePresence>
+        {status === "running" && stalled && (
+          <motion.div
+            key="stalled"
+            initial={{ opacity: 0, y: -4 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.2 }}
+            className="mt-3 flex items-center gap-2 rounded-lg border border-vb-border/60 bg-vb-surface/40 px-4 py-2.5 text-[12px] text-vb-silver-dim"
+          >
+            <Loader2 className="h-3.5 w-3.5 animate-spin text-vb-emerald" />
+            Скачиваем пакет с npm-registry. Это может занять до 2 минут на
+            медленном соединении — не закрывайте окно.
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {error && (
         <div className="mt-4 flex items-start gap-2 rounded-lg border border-vb-loss/30 bg-vb-loss/5 px-4 py-3 text-[13px] text-vb-loss">
