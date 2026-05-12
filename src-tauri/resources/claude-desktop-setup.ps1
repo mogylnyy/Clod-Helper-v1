@@ -97,7 +97,20 @@ function Get-PythonCommand {
 }
 
 function Find-ClaudeDesktopExe {
-    # Известные пути куда Anthropic ставит Claude Desktop на Windows.
+    # Современные версии Claude Desktop ставятся как MSIX/AppX-пакет —
+    # пытаемся найти через Get-AppxPackage, exe лежит внутри пакета.
+    try {
+        $pkg = Get-AppxPackage -Name 'Claude' -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($pkg -and $pkg.InstallLocation) {
+            $msixExe = Join-Path $pkg.InstallLocation 'app\Claude.exe'
+            if (Test-Path $msixExe) { return $msixExe }
+            # Fallback на корень пакета на случай если структура изменится.
+            $altExe = Join-Path $pkg.InstallLocation 'Claude.exe'
+            if (Test-Path $altExe) { return $altExe }
+        }
+    } catch {}
+
+    # Legacy: старые NSIS/Squirrel установки в %LOCALAPPDATA%.
     $candidates = @(
         (Join-Path $env:LOCALAPPDATA 'AnthropicClaude\claude.exe'),
         (Join-Path $env:LOCALAPPDATA 'AnthropicClaude\Claude.exe'),
