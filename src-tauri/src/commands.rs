@@ -103,6 +103,22 @@ pub async fn run_install(
     let need_code = matches!(mode, InstallMode::Code | InstallMode::Both);
     let need_desktop = matches!(mode, InstallMode::Desktop | InstallMode::Both);
 
+    // ВАЖНО: Bridge должен подняться ПЕРВЫМ. Claude Code в шаге 3 прописывает
+    // HTTPS_PROXY=http://127.0.0.1:8889 — если bridge ещё не работает, CLI
+    // не сможет связаться с Anthropic. Поэтому desktop-setup (он же setup
+    // bridge'а) идёт всегда — даже если режим = только Code.
+    emit(&app, "");
+    emit(&app, "▸ Запускаем локальный прокси-bridge…");
+    log_line(&log_file, "--- claude-desktop-setup.ps1 (bridge) ---");
+    run_ps_script(
+        &app,
+        &log_file,
+        &desktop_ps1,
+        &["-ProxyUrl", &proxy_url, "-Yes"],
+    )
+    .await?;
+    emit(&app, "✓ Bridge запущен на 127.0.0.1:8889");
+
     if need_code {
         emit(&app, "");
         emit(&app, "▸ Устанавливаем Claude Code…");
@@ -117,16 +133,9 @@ pub async fn run_install(
         emit(&app, "✓ Claude Code установлен");
     }
     if need_desktop {
+        // bridge уже запустили выше — здесь ничего дополнительного делать
+        // не надо. Сообщение для пользователя:
         emit(&app, "");
-        emit(&app, "▸ Настраиваем Claude Desktop…");
-        log_line(&log_file, "--- claude-desktop-setup.ps1 ---");
-        run_ps_script(
-            &app,
-            &log_file,
-            &desktop_ps1,
-            &["-ProxyUrl", &proxy_url, "-Yes"],
-        )
-        .await?;
         emit(&app, "✓ Claude Desktop настроен");
     }
 

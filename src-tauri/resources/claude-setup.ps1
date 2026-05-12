@@ -267,17 +267,25 @@ try {
     exit 1
 }
 
-# ─── Шаг 3: системные env-vars ───────────────────────────────────
+# ─── Шаг 3: системные env-vars → локальный bridge ────────────────
 
-Write-Step 3 5 "Прописываю HTTPS_PROXY системно (для пользователя)..."
+Write-Step 3 5 "Прописываю HTTPS_PROXY → локальный bridge (127.0.0.1:8889)..."
+
+# Указываем на ЛОКАЛЬНЫЙ bridge, а не на upstream прокси напрямую.
+# Это решает две проблемы:
+#  - Electron-приложения (вроде Claude Desktop) ломаются на auth в URL
+#    прокси-сервера. С локальным bridge без auth они работают штатно.
+#  - Не плодим разные прокси-цепочки для CLI и Desktop: всё ходит через
+#    один мост, который инжектит auth и форвардит в upstream.
+$BridgeUrl = "http://127.0.0.1:8889"
 
 try {
-    [Environment]::SetEnvironmentVariable("HTTPS_PROXY", $ProxyUrl, "User")
-    [Environment]::SetEnvironmentVariable("HTTP_PROXY", $ProxyUrl, "User")
-    # Сразу применяем в текущем процессе чтобы проверка ниже сработала.
-    $env:HTTPS_PROXY = $ProxyUrl
-    $env:HTTP_PROXY = $ProxyUrl
-    Write-Ok "переменные окружения выставлены"
+    [Environment]::SetEnvironmentVariable("HTTPS_PROXY", $BridgeUrl, "User")
+    [Environment]::SetEnvironmentVariable("HTTP_PROXY", $BridgeUrl, "User")
+    # Применяем в текущем процессе чтобы шаг 4 сработал.
+    $env:HTTPS_PROXY = $BridgeUrl
+    $env:HTTP_PROXY = $BridgeUrl
+    Write-Ok "переменные окружения выставлены ($BridgeUrl)"
 } catch {
     Write-Err "не удалось записать env-vars"
     Write-Host "        Ошибка: $_" -ForegroundColor DarkGray
