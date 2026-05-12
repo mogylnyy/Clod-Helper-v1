@@ -89,18 +89,26 @@ async fn run_ps_script(
         ));
     }
 
-    let script_str = script.to_string_lossy().to_string();
-    let mut ps_args: Vec<String> = vec![
+    // Запускаем через -Command + ampersand-call вместо -File, чтобы можно было
+    // слить Write-Host (Information stream) в stdout через "*>&1". Без этого UI
+    // не видит ни одной строки скрипта, потому что Write-Host идёт в host, а
+    // host у дочернего PowerShell — буферизирующий и недоступный родителю.
+    let script_str = script.to_string_lossy().replace('\'', "''");
+    let mut quoted_args = String::new();
+    for a in args {
+        let escaped = a.replace('\'', "''");
+        quoted_args.push_str(&format!(" '{}'", escaped));
+    }
+    let command_line = format!("& '{}'{} *>&1", script_str, quoted_args);
+
+    let ps_args: Vec<String> = vec![
         "-NoProfile".into(),
         "-NonInteractive".into(),
         "-ExecutionPolicy".into(),
         "Bypass".into(),
-        "-File".into(),
-        script_str,
+        "-Command".into(),
+        command_line,
     ];
-    for a in args {
-        ps_args.push((*a).to_string());
-    }
 
     let app_clone = app.clone();
     let result = tokio::task::spawn_blocking(move || {

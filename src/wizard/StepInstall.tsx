@@ -48,7 +48,7 @@ export function StepInstall({ mode, proxyUrl, onBack, onDone }: Props) {
     setError(null);
     setLog([]);
     try {
-      await runInstall({ mode, proxy_url: proxyUrl });
+      await runInstall({ mode, proxyUrl });
       setStatus("done");
     } catch (e: any) {
       setError(typeof e === "string" ? e : (e?.message ?? "Неизвестная ошибка"));

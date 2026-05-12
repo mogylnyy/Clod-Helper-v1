@@ -34,9 +34,24 @@ param(
 $ErrorActionPreference = 'Stop'
 $SourceDir = $PSScriptRoot
 $InstallDir = Join-Path $env:LOCALAPPDATA 'ClaudeDesktopProxy'
+
+# Resolve Startup folder. [Environment]::GetFolderPath('Startup') can return ""
+# under -NonInteractive PowerShell — fall back to the canonical path.
 $StartupDir = [Environment]::GetFolderPath('Startup')
+if ([string]::IsNullOrEmpty($StartupDir)) {
+    $StartupDir = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\Startup'
+}
+if (-not (Test-Path $StartupDir)) {
+    New-Item -ItemType Directory -Path $StartupDir -Force | Out-Null
+}
 $StartupVbs = Join-Path $StartupDir 'ClaudeDesktopProxy.vbs'
-$DesktopShortcut = Join-Path ([Environment]::GetFolderPath('Desktop')) 'Claude Desktop (proxy).lnk'
+
+# Desktop folder — same robustness.
+$DesktopDir = [Environment]::GetFolderPath('Desktop')
+if ([string]::IsNullOrEmpty($DesktopDir)) {
+    $DesktopDir = Join-Path $env:USERPROFILE 'Desktop'
+}
+$DesktopShortcut = Join-Path $DesktopDir 'Claude Desktop (proxy).lnk'
 
 # ─── Helpers ──────────────────────────────────────────────────────
 

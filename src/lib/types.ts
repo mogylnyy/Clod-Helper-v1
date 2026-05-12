@@ -27,6 +27,10 @@ export interface ProxyCheckResult {
   latency_ms?: number;
   status_code?: number;
   error?: string;
+  ip?: string;
+  country_code?: string;
+  country_name?: string;
+  isp?: string;
 }
 
 export interface WizardState {

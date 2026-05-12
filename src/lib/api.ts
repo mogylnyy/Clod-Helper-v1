@@ -24,7 +24,7 @@ export async function checkProxy(url: string): Promise<ProxyCheckResult> {
 
 export async function runInstall(params: {
   mode: "code" | "desktop" | "both";
-  proxy_url: string;
+  proxyUrl: string;
 }): Promise<void> {
   return invoke<void>("run_install", params);
 }
