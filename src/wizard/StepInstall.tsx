@@ -89,7 +89,7 @@ export function StepInstall({ mode, proxyUrl, onBack, onDone }: Props) {
           </div>
           <div
             ref={logRef}
-            className="max-h-[280px] min-h-[180px] overflow-y-auto px-4 py-3 font-mono text-[12px] leading-relaxed text-vb-silver"
+            className="max-h-[420px] min-h-[180px] overflow-y-auto px-4 py-3 font-mono text-[11px] leading-relaxed text-vb-silver"
           >
             {log.length === 0 && status === "running" && (
               <div className="flex items-center gap-2 text-vb-silver-dim">
