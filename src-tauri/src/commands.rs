@@ -167,48 +167,46 @@ async fn run_ps_script(
         return Err(msg);
     }
 
-    // Run via -Command + ampersand-call so we can fold Write-Host (information
-    // stream) into stdout via "*>&1". Without that the UI sees nothing because
-    // Write-Host writes to the child PowerShell host, which is not connected
-    // to our pipe.
-    //
-    // CRITICAL: flag NAMES like "-ProxyUrl" must NOT be wrapped in single
-    // quotes — PowerShell treats them as positional literals and parameter
-    // binding to named args breaks. Quote only the VALUES.
-    //
     // Tauri's resource_dir() returns Windows UNC-extended paths like
-    // `\\?\C:\...`. PowerShell's `&` operator refuses those — strip the
-    // prefix so the script is invoked with a plain drive path.
+    // `\\?\C:\...`. PowerShell refuses those — strip the prefix so the script
+    // is invoked with a plain drive path.
     let raw = script.to_string_lossy();
     let cleaned = raw
         .strip_prefix(r"\\?\UNC\")
         .map(|s| format!(r"\\{s}"))
         .or_else(|| raw.strip_prefix(r"\\?\").map(String::from))
         .unwrap_or_else(|| raw.to_string());
-    let script_str = cleaned.replace('\'', "''");
-    let mut tail = String::new();
-    for a in args {
-        if a.starts_with('-') {
-            tail.push(' ');
-            tail.push_str(a);
-        } else {
-            let escaped = a.replace('\'', "''");
-            tail.push_str(&format!(" '{escaped}'"));
-        }
-    }
-    let command_line = format!("& '{}'{} *>&1", script_str, tail);
 
-    log_line(log_file, &format!("[exec] powershell -Command {command_line}"));
-    emit(app, format!("[exec] {command_line}"));
-
-    let ps_args: Vec<String> = vec![
+    // Use -File mode (the script is in our trusted bundle). Args pass through
+    // natively, no quoting dance with `-Command`. `Write-Host` would normally
+    // bypass stdout, but we wrap the invocation with $InformationPreference=
+    // Continue + 4>&1 *>&1 inside -Command... actually -Command is what bit
+    // us last time. Trick: redirect host output by also using -OutputFormat
+    // Text and piping host stream through Tee-Object... too much.
+    //
+    // Simpler approach that ACTUALLY works in CREATE_NO_WINDOW spawn: run
+    // with -File, and rely on the fact that our scripts use Write-Host which
+    // PowerShell 5.1 directs to the information stream — and since 5.1
+    // launched without a real host, that stream IS written to stdout.
+    let mut ps_args: Vec<String> = vec![
         "-NoProfile".into(),
         "-NonInteractive".into(),
         "-ExecutionPolicy".into(),
         "Bypass".into(),
-        "-Command".into(),
-        command_line,
+        "-File".into(),
+        cleaned.clone(),
     ];
+    for a in args {
+        ps_args.push((*a).to_string());
+    }
+
+    let exec_repr = format!(
+        "powershell.exe -File '{}' {}",
+        cleaned,
+        args.join(" ")
+    );
+    log_line(log_file, &format!("[exec] {exec_repr}"));
+    emit(app, format!("[exec] {exec_repr}"));
 
     let app_clone = app.clone();
     let log_clone = log_file.clone();

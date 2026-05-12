@@ -115,7 +115,7 @@ export function StepInstall({ mode, proxyUrl, onBack, onDone }: Props) {
         </div>
       )}
 
-      {status === "done" && (
+      {status === "done" && (mode === "code" || mode === "both") && (
         <div className="mt-5 flex items-start gap-2 rounded-lg border border-vb-emerald/30 bg-vb-emerald/5 px-4 py-3 text-[13px] text-vb-silver">
           <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-vb-emerald" />
           <div>
@@ -124,6 +124,20 @@ export function StepInstall({ mode, proxyUrl, onBack, onDone }: Props) {
               claude
             </code>
             . Должна появиться приветственная строка.
+          </div>
+        </div>
+      )}
+
+      {status === "done" && mode === "desktop" && (
+        <div className="mt-5 flex items-start gap-2 rounded-lg border border-vb-emerald/30 bg-vb-emerald/5 px-4 py-3 text-[13px] text-vb-silver">
+          <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-vb-emerald" />
+          <div>
+            Bridge запущен на{" "}
+            <code className="rounded bg-vb-bg px-1.5 py-0.5 font-mono text-vb-emerald">
+              127.0.0.1:8889
+            </code>
+            . Запускайте Claude Desktop через ярлык «Claude Desktop (proxy)» с
+            рабочего стола.
           </div>
         </div>
       )}
