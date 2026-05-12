@@ -93,13 +93,23 @@ async fn run_ps_script(
     // слить Write-Host (Information stream) в stdout через "*>&1". Без этого UI
     // не видит ни одной строки скрипта, потому что Write-Host идёт в host, а
     // host у дочернего PowerShell — буферизирующий и недоступный родителю.
+    //
+    // КРИТИЧНО: флаги вида "-ProxyUrl" нельзя оборачивать в кавычки внутри
+    // -Command, иначе PowerShell считает их позиционными литералами и привязка
+    // к именованным параметрам ломается. Кавычим только значения.
     let script_str = script.to_string_lossy().replace('\'', "''");
-    let mut quoted_args = String::new();
+    let mut tail = String::new();
     for a in args {
-        let escaped = a.replace('\'', "''");
-        quoted_args.push_str(&format!(" '{}'", escaped));
+        let starts_with_dash = a.starts_with('-');
+        if starts_with_dash {
+            tail.push(' ');
+            tail.push_str(a);
+        } else {
+            let escaped = a.replace('\'', "''");
+            tail.push_str(&format!(" '{}'", escaped));
+        }
     }
-    let command_line = format!("& '{}'{} *>&1", script_str, quoted_args);
+    let command_line = format!("& '{}'{} *>&1", script_str, tail);
 
     let ps_args: Vec<String> = vec![
         "-NoProfile".into(),
