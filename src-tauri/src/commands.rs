@@ -75,6 +75,14 @@ pub async fn run_install(
     log_line(&log_file, &format!("resource_dir = {}", resources_dir.display()));
     emit(&app, format!("⓶ resources_dir = {}", resources_dir.display()));
 
+    // ─── DIAGNOSTIC: prove powershell.exe actually works from this process ──
+    emit(&app, "");
+    emit(&app, "── ДИАГНОСТИКА ──");
+    log_line(&log_file, "--- diagnostic ---");
+    run_diagnostic(&app, &log_file).await;
+    emit(&app, "── /ДИАГНОСТИКА ──");
+    emit(&app, "");
+
     let code_ps1 = resources_dir.join("resources").join("claude-setup.ps1");
     let desktop_ps1 = resources_dir
         .join("resources")
@@ -150,6 +158,66 @@ fn log_line(file: &Arc<Mutex<Option<std::fs::File>>>, text: &str) {
 
 fn emit(app: &AppHandle, line: impl Into<String>) {
     let _ = app.emit("install:log", line.into());
+}
+
+async fn run_diagnostic(
+    app: &AppHandle,
+    log_file: &Arc<Mutex<Option<std::fs::File>>>,
+) {
+    let app_c = app.clone();
+    let log_c = log_file.clone();
+    let _ = tokio::task::spawn_blocking(move || {
+        let mut cmd = Command::new("powershell.exe");
+        cmd.args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            "Write-Output 'D1: hello from powershell'; \
+             Write-Output ('D2: PSVersion = ' + $PSVersionTable.PSVersion.ToString()); \
+             Write-Output ('D3: ExecutionPolicy = ' + (Get-ExecutionPolicy -Scope Process) + ' / ' + (Get-ExecutionPolicy -Scope CurrentUser) + ' / ' + (Get-ExecutionPolicy -Scope LocalMachine)); \
+             Write-Output ('D4: script exists = ' + (Test-Path 'C:\\clod-helper\\src-tauri\\target\\debug\\resources\\claude-desktop-setup.ps1')); \
+             Write-Output ('D5: pwd = ' + (Get-Location).Path); \
+             Write-Output 'D6: done'",
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+        #[cfg(target_os = "windows")]
+        {
+            use std::os::windows::process::CommandExt;
+            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+            cmd.creation_flags(CREATE_NO_WINDOW);
+        }
+        let output = cmd.output();
+        match output {
+            Ok(o) => {
+                let out = String::from_utf8_lossy(&o.stdout);
+                let err = String::from_utf8_lossy(&o.stderr);
+                for line in out.lines() {
+                    let _ = app_c.emit("install:log", line.to_string());
+                    log_line(&log_c, line);
+                }
+                for line in err.lines() {
+                    let tagged = format!("[stderr] {line}");
+                    let _ = app_c.emit("install:log", tagged.clone());
+                    log_line(&log_c, &tagged);
+                }
+                let s = format!(
+                    "[diag-exit] code={:?}, stdout_bytes={}, stderr_bytes={}",
+                    o.status.code(),
+                    o.stdout.len(),
+                    o.stderr.len()
+                );
+                let _ = app_c.emit("install:log", s.clone());
+                log_line(&log_c, &s);
+            }
+            Err(e) => {
+                let s = format!("[diag-error] {e}");
+                let _ = app_c.emit("install:log", s.clone());
+                log_line(&log_c, &s);
+            }
+        }
+    })
+    .await;
 }
 
 async fn run_ps_script(
