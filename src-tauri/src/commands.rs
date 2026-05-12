@@ -63,7 +63,7 @@ pub async fn run_install(
     );
     log_line(&log_file, &format!("proxy_url = {proxy_url}"));
 
-    emit(
+    emit_verbose(
         &app,
         format!("⓵ Полный лог: {}", log_path.display()),
     );
@@ -73,15 +73,16 @@ pub async fn run_install(
         .resource_dir()
         .map_err(|e| format!("Не удалось найти папку ресурсов: {e}"))?;
     log_line(&log_file, &format!("resource_dir = {}", resources_dir.display()));
-    emit(&app, format!("⓶ resources_dir = {}", resources_dir.display()));
+    emit_verbose(&app, format!("⓶ resources_dir = {}", resources_dir.display()));
 
     // ─── DIAGNOSTIC: prove powershell.exe actually works from this process ──
-    emit(&app, "");
-    emit(&app, "── ДИАГНОСТИКА ──");
+    // (verbose-only — hidden from default UI; still written to file log)
+    emit_verbose(&app, "");
+    emit_verbose(&app, "── ДИАГНОСТИКА ──");
     log_line(&log_file, "--- diagnostic ---");
     run_diagnostic(&app, &log_file).await;
-    emit(&app, "── /ДИАГНОСТИКА ──");
-    emit(&app, "");
+    emit_verbose(&app, "── /ДИАГНОСТИКА ──");
+    emit_verbose(&app, "");
 
     let code_ps1 = resources_dir.join("resources").join("claude-setup.ps1");
     let desktop_ps1 = resources_dir
@@ -96,8 +97,8 @@ pub async fn run_install(
 
     log_line(&log_file, &format!("code_ps1     = {}", code_ps1.display()));
     log_line(&log_file, &format!("desktop_ps1  = {}", desktop_ps1.display()));
-    emit(&app, format!("⓷ code_ps1    = {}", code_ps1.display()));
-    emit(&app, format!("⓸ desktop_ps1 = {}", desktop_ps1.display()));
+    emit_verbose(&app, format!("⓷ code_ps1    = {}", code_ps1.display()));
+    emit_verbose(&app, format!("⓸ desktop_ps1 = {}", desktop_ps1.display()));
 
     let need_code = matches!(mode, InstallMode::Code | InstallMode::Both);
     let need_desktop = matches!(mode, InstallMode::Desktop | InstallMode::Both);
@@ -160,6 +161,10 @@ fn emit(app: &AppHandle, line: impl Into<String>) {
     let _ = app.emit("install:log", line.into());
 }
 
+fn emit_verbose(app: &AppHandle, line: impl Into<String>) {
+    let _ = app.emit("install:log", format!("__verbose__:{}", line.into()));
+}
+
 async fn run_diagnostic(
     app: &AppHandle,
     log_file: &Arc<Mutex<Option<std::fs::File>>>,
@@ -193,12 +198,12 @@ async fn run_diagnostic(
                 let out = String::from_utf8_lossy(&o.stdout);
                 let err = String::from_utf8_lossy(&o.stderr);
                 for line in out.lines() {
-                    let _ = app_c.emit("install:log", line.to_string());
+                    emit_verbose(&app_c, line.to_string());
                     log_line(&log_c, line);
                 }
                 for line in err.lines() {
                     let tagged = format!("[stderr] {line}");
-                    let _ = app_c.emit("install:log", tagged.clone());
+                    emit_verbose(&app_c, tagged.clone());
                     log_line(&log_c, &tagged);
                 }
                 let s = format!(
@@ -207,12 +212,12 @@ async fn run_diagnostic(
                     o.stdout.len(),
                     o.stderr.len()
                 );
-                let _ = app_c.emit("install:log", s.clone());
+                emit_verbose(&app_c, s.clone());
                 log_line(&log_c, &s);
             }
             Err(e) => {
                 let s = format!("[diag-error] {e}");
-                let _ = app_c.emit("install:log", s.clone());
+                emit_verbose(&app_c, s.clone());
                 log_line(&log_c, &s);
             }
         }
@@ -283,7 +288,7 @@ async fn run_ps_script(
 
     let exec_repr = format!("powershell.exe -Command {command_line}");
     log_line(log_file, &format!("[exec] {exec_repr}"));
-    emit(app, format!("[exec] {exec_repr}"));
+    emit_verbose(app, format!("[exec] {exec_repr}"));
 
     // Use synchronous full capture via .output() instead of streaming. Reason:
     // when PowerShell finishes very quickly (e.g. fails on early validation),
@@ -326,7 +331,7 @@ async fn run_ps_script(
             n_err += 1;
             let tagged = format!("[stderr] {line}");
             log_line(&log_clone, &tagged);
-            let _ = app_clone.emit("install:log", tagged);
+            emit_verbose(&app_clone, tagged);
         }
 
         let code = output.status.code().unwrap_or(-1);
@@ -336,7 +341,7 @@ async fn run_ps_script(
             output.stderr.len()
         );
         log_line(&log_clone, &summary);
-        let _ = app_clone.emit("install:log", summary);
+        emit_verbose(&app_clone, summary);
 
         if output.status.success() {
             Ok(())

@@ -1,14 +1,19 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import {
   Loader2,
   CheckCircle2,
   XCircle,
   Terminal as TerminalIcon,
+  ChevronDown,
+  ChevronRight,
 } from "lucide-react";
 import { Button } from "../components/Button";
 import type { InstallMode } from "../lib/types";
 import { runInstall } from "../lib/api";
+import { cn } from "../lib/cn";
+
+const VERBOSE_PREFIX = "__verbose__:";
 
 interface Props {
   mode: InstallMode;
@@ -22,8 +27,18 @@ type Status = "idle" | "running" | "done" | "error";
 export function StepInstall({ mode, proxyUrl, onBack, onDone }: Props) {
   const [status, setStatus] = useState<Status>("idle");
   const [log, setLog] = useState<string[]>([]);
+  const [verbose, setVerbose] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const logRef = useRef<HTMLDivElement>(null);
+
+  const visibleLog = useMemo(() => {
+    if (verbose) {
+      return log.map((line) =>
+        line.startsWith(VERBOSE_PREFIX) ? line.slice(VERBOSE_PREFIX.length) : line,
+      );
+    }
+    return log.filter((line) => !line.startsWith(VERBOSE_PREFIX));
+  }, [log, verbose]);
 
   useEffect(() => {
     let unlistenLog: UnlistenFn | null = null;
@@ -48,7 +63,7 @@ export function StepInstall({ mode, proxyUrl, onBack, onDone }: Props) {
     if (logRef.current) {
       logRef.current.scrollTop = logRef.current.scrollHeight;
     }
-  }, [log]);
+  }, [visibleLog]);
 
   async function handleStart() {
     setStatus("running");
@@ -90,21 +105,61 @@ export function StepInstall({ mode, proxyUrl, onBack, onDone }: Props) {
 
       {(status === "running" || status === "done" || status === "error") && (
         <div className="mt-6 glass-card overflow-hidden">
-          <div className="flex items-center gap-2 border-b border-vb-border/60 px-4 py-2.5 text-[11px] uppercase tracking-wider text-vb-silver-dim">
-            <TerminalIcon className="h-3.5 w-3.5" />
-            Журнал установки
+          <div className="flex items-center justify-between gap-2 border-b border-vb-border/60 px-4 py-2.5">
+            <div className="flex items-center gap-2 text-[11px] uppercase tracking-wider text-vb-silver-dim">
+              <TerminalIcon className="h-3.5 w-3.5" />
+              Журнал установки
+            </div>
+            <button
+              type="button"
+              onClick={() => setVerbose((v) => !v)}
+              className={cn(
+                "flex items-center gap-1 rounded-md px-2 py-1 text-[11px] transition-colors",
+                verbose
+                  ? "bg-vb-surface/60 text-vb-silver"
+                  : "text-vb-silver-dim hover:text-vb-silver",
+              )}
+            >
+              {verbose ? (
+                <ChevronDown className="h-3 w-3" />
+              ) : (
+                <ChevronRight className="h-3 w-3" />
+              )}
+              Подробно
+            </button>
           </div>
           <div
             ref={logRef}
             className="max-h-[420px] min-h-[180px] overflow-y-auto px-4 py-3 font-mono text-[11px] leading-relaxed text-vb-silver"
           >
-            {log.length === 0 && status === "running" && (
+            {visibleLog.length === 0 && status === "running" && (
               <div className="flex items-center gap-2 text-vb-silver-dim">
                 <Loader2 className="h-3.5 w-3.5 animate-spin" /> Запускаем…
               </div>
             )}
-            {log.map((line, i) => (
-              <div key={i} className="whitespace-pre-wrap">
+            {visibleLog.map((line, i) => (
+              <div
+                key={i}
+                className={cn(
+                  "whitespace-pre-wrap",
+                  line.startsWith("[stderr]") && "text-vb-loss",
+                  (line.startsWith("[exec]") ||
+                    line.startsWith("[exit]") ||
+                    line.startsWith("⓵") ||
+                    line.startsWith("⓶") ||
+                    line.startsWith("⓷") ||
+                    line.startsWith("⓸") ||
+                    line.startsWith("──") ||
+                    line.startsWith("D1:") ||
+                    line.startsWith("D2:") ||
+                    line.startsWith("D3:") ||
+                    line.startsWith("D4:") ||
+                    line.startsWith("D5:") ||
+                    line.startsWith("D6:") ||
+                    line.startsWith("[diag")) &&
+                    "text-vb-silver-dim/70",
+                )}
+              >
                 {line}
               </div>
             ))}
