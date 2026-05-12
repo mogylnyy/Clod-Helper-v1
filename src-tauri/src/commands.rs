@@ -1,4 +1,4 @@
-use std::io::Write;
+use std::io::{BufRead, BufReader, Write};
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
 
@@ -290,13 +290,12 @@ async fn run_ps_script(
     log_line(log_file, &format!("[exec] {exec_repr}"));
     emit_verbose(app, format!("[exec] {exec_repr}"));
 
-    // Use synchronous full capture via .output() instead of streaming. Reason:
-    // when PowerShell finishes very quickly (e.g. fails on early validation),
-    // the streaming reader thread can be torn down before drainage completes,
-    // resulting in stdout_lines=1 / "empty" output despite real content. With
-    // .output() we get the entire stdout/stderr atomically AFTER the child
-    // exited — no race possible. Cost: no live-streaming progress; the user
-    // sees the full output as one block. Acceptable for ~2-3 second scripts.
+    // Live streaming: spawn child, read stdout/stderr line-by-line on separate
+    // threads, emit to UI as soon as each line arrives. Critical correctness:
+    // join the reader threads BEFORE child.wait() — otherwise wait() can close
+    // the pipes before drainage completes (this caused the earlier "1 line"
+    // bug). Calling wait() AFTER joining is safe because pipe EOF means the
+    // child has already exited.
     let app_clone = app.clone();
     let log_clone = log_file.clone();
     let result = tokio::task::spawn_blocking(move || -> Result<(), String> {
@@ -309,41 +308,72 @@ async fn run_ps_script(
             cmd.creation_flags(CREATE_NO_WINDOW);
         }
 
-        let output = cmd.output().map_err(|e| {
+        let mut child = cmd.spawn().map_err(|e| {
             let msg = format!("powershell.exe не запустился: {e}");
             log_line(&log_clone, &msg);
             msg
         })?;
 
-        // Windows PowerShell 5.1 outputs in OEM/UTF-16-with-BOM depending on
-        // console. Try UTF-8 first, then UTF-16 LE/BE, then fall back to lossy.
-        let stdout_text = decode_ps_output(&output.stdout);
-        let stderr_text = decode_ps_output(&output.stderr);
+        let stdout_count = Arc::new(Mutex::new(0u64));
+        let stderr_count = Arc::new(Mutex::new(0u64));
 
-        let mut n_out: u64 = 0;
-        for line in stdout_text.lines() {
-            n_out += 1;
-            log_line(&log_clone, line);
-            let _ = app_clone.emit("install:log", line.to_string());
+        let stdout_handle = child.stdout.take().map(|stdout| {
+            let app_inner = app_clone.clone();
+            let log_inner = log_clone.clone();
+            let count = stdout_count.clone();
+            std::thread::spawn(move || {
+                let reader = BufReader::new(stdout);
+                for line in reader.lines().map_while(Result::ok) {
+                    if let Ok(mut n) = count.lock() {
+                        *n += 1;
+                    }
+                    log_line(&log_inner, &line);
+                    let _ = app_inner.emit("install:log", line);
+                }
+            })
+        });
+
+        let stderr_handle = child.stderr.take().map(|stderr| {
+            let app_inner = app_clone.clone();
+            let log_inner = log_clone.clone();
+            let count = stderr_count.clone();
+            std::thread::spawn(move || {
+                let reader = BufReader::new(stderr);
+                for line in reader.lines().map_while(Result::ok) {
+                    if let Ok(mut n) = count.lock() {
+                        *n += 1;
+                    }
+                    let tagged = format!("[stderr] {line}");
+                    log_line(&log_inner, &tagged);
+                    let _ = app_inner.emit("install:log", format!("__verbose__:{tagged}"));
+                }
+            })
+        });
+
+        // IMPORTANT: drain pipes first, then wait. Pipe EOF == child exited.
+        if let Some(h) = stdout_handle {
+            let _ = h.join();
         }
-        let mut n_err: u64 = 0;
-        for line in stderr_text.lines() {
-            n_err += 1;
-            let tagged = format!("[stderr] {line}");
-            log_line(&log_clone, &tagged);
-            emit_verbose(&app_clone, tagged);
+        if let Some(h) = stderr_handle {
+            let _ = h.join();
         }
 
-        let code = output.status.code().unwrap_or(-1);
+        let status = child.wait().map_err(|e| {
+            let msg = format!("Не получилось дождаться скрипта: {e}");
+            log_line(&log_clone, &msg);
+            msg
+        })?;
+
+        let n_out = stdout_count.lock().map(|g| *g).unwrap_or(0);
+        let n_err = stderr_count.lock().map(|g| *g).unwrap_or(0);
+        let code = status.code().unwrap_or(-1);
         let summary = format!(
-            "[exit] code={code}, stdout_lines={n_out}, stderr_lines={n_err}, stdout_bytes={}, stderr_bytes={}",
-            output.stdout.len(),
-            output.stderr.len()
+            "[exit] code={code}, stdout_lines={n_out}, stderr_lines={n_err}"
         );
         log_line(&log_clone, &summary);
         emit_verbose(&app_clone, summary);
 
-        if output.status.success() {
+        if status.success() {
             Ok(())
         } else {
             Err(format!(
@@ -357,19 +387,3 @@ async fn run_ps_script(
     result
 }
 
-fn decode_ps_output(bytes: &[u8]) -> String {
-    if bytes.is_empty() {
-        return String::new();
-    }
-    // UTF-8 BOM
-    let payload = if bytes.len() >= 3
-        && bytes[0] == 0xEF
-        && bytes[1] == 0xBB
-        && bytes[2] == 0xBF
-    {
-        &bytes[3..]
-    } else {
-        bytes
-    };
-    String::from_utf8_lossy(payload).into_owned()
-}

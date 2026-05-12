@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { AnimatePresence, motion } from "framer-motion";
 import {
   Loader2,
   CheckCircle2,
@@ -14,6 +15,10 @@ import { runInstall } from "../lib/api";
 import { cn } from "../lib/cn";
 
 const VERBOSE_PREFIX = "__verbose__:";
+// How long between revealing successive log lines (ms). Lower = faster
+// typewriter. The Rust side already streams live; this just paces lines that
+// arrive in tight bursts so the UI feels alive instead of dumping a wall.
+const REVEAL_INTERVAL_MS = 55;
 
 interface Props {
   mode: InstallMode;
@@ -26,26 +31,29 @@ type Status = "idle" | "running" | "done" | "error";
 
 export function StepInstall({ mode, proxyUrl, onBack, onDone }: Props) {
   const [status, setStatus] = useState<Status>("idle");
-  const [log, setLog] = useState<string[]>([]);
+  // pending = raw events from backend, revealed = paced output for the UI
+  const pendingRef = useRef<string[]>([]);
+  const [revealed, setRevealed] = useState<string[]>([]);
   const [verbose, setVerbose] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const logRef = useRef<HTMLDivElement>(null);
 
   const visibleLog = useMemo(() => {
     if (verbose) {
-      return log.map((line) =>
+      return revealed.map((line) =>
         line.startsWith(VERBOSE_PREFIX) ? line.slice(VERBOSE_PREFIX.length) : line,
       );
     }
-    return log.filter((line) => !line.startsWith(VERBOSE_PREFIX));
-  }, [log, verbose]);
+    return revealed.filter((line) => !line.startsWith(VERBOSE_PREFIX));
+  }, [revealed, verbose]);
 
+  // Subscribe to backend log events — push into the pending queue.
   useEffect(() => {
     let unlistenLog: UnlistenFn | null = null;
     let cancelled = false;
     (async () => {
       const u = await listen<string>("install:log", (e) => {
-        setLog((prev) => [...prev, e.payload]);
+        pendingRef.current.push(e.payload);
       });
       if (cancelled) {
         u();
@@ -59,6 +67,19 @@ export function StepInstall({ mode, proxyUrl, onBack, onDone }: Props) {
     };
   }, []);
 
+  // Reveal one line at a time from pending → revealed. If the pending queue
+  // backs up (script dumped 40 lines at once), we still pace at the same
+  // interval so the user gets a feel of progress.
+  useEffect(() => {
+    if (status !== "running" && status !== "done" && status !== "error") return;
+    const t = window.setInterval(() => {
+      if (pendingRef.current.length === 0) return;
+      const next = pendingRef.current.shift()!;
+      setRevealed((prev) => [...prev, next]);
+    }, REVEAL_INTERVAL_MS);
+    return () => window.clearInterval(t);
+  }, [status]);
+
   useEffect(() => {
     if (logRef.current) {
       logRef.current.scrollTop = logRef.current.scrollHeight;
@@ -68,11 +89,16 @@ export function StepInstall({ mode, proxyUrl, onBack, onDone }: Props) {
   async function handleStart() {
     setStatus("running");
     setError(null);
-    setLog([]);
+    setRevealed([]);
+    pendingRef.current = [];
     try {
       await runInstall({ mode, proxyUrl });
+      // Don't flip to "done" until the typewriter has caught up — otherwise
+      // the success banner appears while the log is still scrolling.
+      await drainPending(pendingRef);
       setStatus("done");
     } catch (e: any) {
+      await drainPending(pendingRef);
       setError(typeof e === "string" ? e : (e?.message ?? "Неизвестная ошибка"));
       setStatus("error");
     }
@@ -109,6 +135,9 @@ export function StepInstall({ mode, proxyUrl, onBack, onDone }: Props) {
             <div className="flex items-center gap-2 text-[11px] uppercase tracking-wider text-vb-silver-dim">
               <TerminalIcon className="h-3.5 w-3.5" />
               Журнал установки
+              {status === "running" && (
+                <Loader2 className="ml-1 h-3 w-3 animate-spin text-vb-silver-dim" />
+              )}
             </div>
             <button
               type="button"
@@ -137,32 +166,37 @@ export function StepInstall({ mode, proxyUrl, onBack, onDone }: Props) {
                 <Loader2 className="h-3.5 w-3.5 animate-spin" /> Запускаем…
               </div>
             )}
-            {visibleLog.map((line, i) => (
-              <div
-                key={i}
-                className={cn(
-                  "whitespace-pre-wrap",
-                  line.startsWith("[stderr]") && "text-vb-loss",
-                  (line.startsWith("[exec]") ||
-                    line.startsWith("[exit]") ||
-                    line.startsWith("⓵") ||
-                    line.startsWith("⓶") ||
-                    line.startsWith("⓷") ||
-                    line.startsWith("⓸") ||
-                    line.startsWith("──") ||
-                    line.startsWith("D1:") ||
-                    line.startsWith("D2:") ||
-                    line.startsWith("D3:") ||
-                    line.startsWith("D4:") ||
-                    line.startsWith("D5:") ||
-                    line.startsWith("D6:") ||
-                    line.startsWith("[diag")) &&
-                    "text-vb-silver-dim/70",
-                )}
-              >
-                {line}
-              </div>
-            ))}
+            <AnimatePresence initial={false}>
+              {visibleLog.map((line, i) => (
+                <motion.div
+                  key={`${i}:${line}`}
+                  initial={{ opacity: 0, y: 4 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ duration: 0.18, ease: "easeOut" }}
+                  className={cn(
+                    "whitespace-pre-wrap",
+                    line.startsWith("[stderr]") && "text-vb-loss",
+                    (line.startsWith("[exec]") ||
+                      line.startsWith("[exit]") ||
+                      line.startsWith("⓵") ||
+                      line.startsWith("⓶") ||
+                      line.startsWith("⓷") ||
+                      line.startsWith("⓸") ||
+                      line.startsWith("──") ||
+                      line.startsWith("D1:") ||
+                      line.startsWith("D2:") ||
+                      line.startsWith("D3:") ||
+                      line.startsWith("D4:") ||
+                      line.startsWith("D5:") ||
+                      line.startsWith("D6:") ||
+                      line.startsWith("[diag")) &&
+                      "text-vb-silver-dim/70",
+                  )}
+                >
+                  {line}
+                </motion.div>
+              ))}
+            </AnimatePresence>
           </div>
         </div>
       )}
@@ -217,4 +251,13 @@ export function StepInstall({ mode, proxyUrl, onBack, onDone }: Props) {
       </div>
     </div>
   );
+}
+
+async function drainPending(ref: React.MutableRefObject<string[]>) {
+  // Wait until the typewriter interval has emptied the queue, with a safety
+  // cap so we never block forever.
+  const start = Date.now();
+  while (ref.current.length > 0 && Date.now() - start < 8000) {
+    await new Promise((r) => setTimeout(r, REVEAL_INTERVAL_MS));
+  }
 }
