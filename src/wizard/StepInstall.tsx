@@ -54,12 +54,12 @@ export function StepInstall({
   const logRef = useRef<HTMLDivElement>(null);
 
   const visibleLog = useMemo(() => {
-    if (verbose) {
-      return revealed.map((line) =>
-        line.startsWith(VERBOSE_PREFIX) ? line.slice(VERBOSE_PREFIX.length) : line,
-      );
-    }
-    return revealed.filter((line) => !line.startsWith(VERBOSE_PREFIX));
+    const stripped = verbose
+      ? revealed.map((l) =>
+          l.startsWith(VERBOSE_PREFIX) ? l.slice(VERBOSE_PREFIX.length) : l,
+        )
+      : revealed.filter((l) => !l.startsWith(VERBOSE_PREFIX));
+    return verbose ? stripped : prettifyLog(stripped);
   }, [revealed, verbose]);
 
   // Subscribe to backend events.
@@ -164,13 +164,13 @@ export function StepInstall({
 
   // Success state — completely separate visual layout (no header / log dump).
   if (status === "done") {
-    const allLogLines = revealed.map((l) =>
-      l.startsWith(VERBOSE_PREFIX) ? l.slice(VERBOSE_PREFIX.length) : l,
+    const cleaned = prettifyLog(
+      revealed.filter((l) => !l.startsWith(VERBOSE_PREFIX)),
     );
     return (
       <SuccessScreen
         mode={mode}
-        log={allLogLines}
+        log={cleaned}
         onBack={onBack}
         onInstallCodeToo={onRestartWithCode}
       />
@@ -234,7 +234,7 @@ export function StepInstall({
           </div>
           <div
             ref={logRef}
-            className="max-h-[420px] min-h-[180px] overflow-y-auto px-4 py-3 font-mono text-[11px] leading-relaxed text-vb-silver"
+            className="max-h-[420px] min-h-[180px] overflow-y-auto px-5 py-4 text-vb-silver"
           >
             {visibleLog.length === 0 && status === "running" && (
               <div className="flex items-center gap-2 text-vb-silver-dim">
@@ -243,33 +243,7 @@ export function StepInstall({
             )}
             <AnimatePresence initial={false}>
               {visibleLog.map((line, i) => (
-                <motion.div
-                  key={`${i}:${line}`}
-                  initial={{ opacity: 0, y: 4 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  transition={{ duration: 0.18, ease: "easeOut" }}
-                  className={cn(
-                    "whitespace-pre-wrap",
-                    line.startsWith("[stderr]") && "text-vb-loss",
-                    (line.startsWith("[exec]") ||
-                      line.startsWith("[exit]") ||
-                      line.startsWith("⓵") ||
-                      line.startsWith("⓶") ||
-                      line.startsWith("⓷") ||
-                      line.startsWith("⓸") ||
-                      line.startsWith("──") ||
-                      line.startsWith("D1:") ||
-                      line.startsWith("D2:") ||
-                      line.startsWith("D3:") ||
-                      line.startsWith("D4:") ||
-                      line.startsWith("D5:") ||
-                      line.startsWith("D6:") ||
-                      line.startsWith("[diag")) &&
-                      "text-vb-silver-dim/70",
-                  )}
-                >
-                  {line}
-                </motion.div>
+                <LogLine key={`${i}:${line}`} line={line} />
               ))}
             </AnimatePresence>
           </div>
@@ -354,6 +328,122 @@ export function StepInstall({
       </div>
     </div>
   );
+}
+
+// Render a single log line with style based on its kind.
+export function LogLine({ line }: { line: string }) {
+  // Section header — was inside ASCII ┌─┐ frame.
+  if (line.startsWith("## ")) {
+    const title = line.slice(3);
+    return (
+      <motion.div
+        initial={{ opacity: 0, y: 4 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.2, ease: "easeOut" }}
+        className="mt-3 mb-1 flex items-center gap-2 first:mt-0"
+      >
+        <div className="h-px flex-1 bg-white/[0.06]" />
+        <span className="font-sans text-[10px] font-medium uppercase tracking-[0.14em] text-vb-silver-dim/80">
+          {title}
+        </span>
+        <div className="h-px flex-1 bg-white/[0.06]" />
+      </motion.div>
+    );
+  }
+
+  const trimmed = line.trim();
+  const isStep = /^\[\d\/\d\]/.test(trimmed);
+  const isOk = trimmed.startsWith("✓") || trimmed.startsWith("✔");
+  const isWarn = trimmed.startsWith("⚠");
+  const isErr = trimmed.startsWith("✗") || line.startsWith("[stderr]");
+  const isArrow = trimmed.startsWith("▸") || trimmed.startsWith("↓");
+  const isInternal =
+    line.startsWith("[exec]") ||
+    line.startsWith("[exit]") ||
+    line.startsWith("[diag") ||
+    /^[⓵⓶⓷⓸]/.test(line) ||
+    line.startsWith("──") ||
+    /^D[1-6]:/.test(line);
+
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 4 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.2, ease: "easeOut" }}
+      className={cn(
+        "whitespace-pre-wrap font-mono text-[11px] leading-[1.7]",
+        isOk && "text-vb-emerald/90",
+        isWarn && "text-vb-warn",
+        isErr && "text-vb-loss",
+        isStep && "mt-1 font-medium text-vb-silver",
+        isArrow && "text-vb-silver",
+        isInternal && "text-vb-silver-dim/60",
+        !isOk &&
+          !isWarn &&
+          !isErr &&
+          !isStep &&
+          !isArrow &&
+          !isInternal &&
+          "text-vb-silver-dim",
+      )}
+    >
+      {line}
+    </motion.div>
+  );
+}
+
+// Clean PowerShell raw output: drop ASCII box-drawing frames, hint-blocks,
+// long Windows paths, and other noise that scares non-technical users.
+// Keeps the meaningful step lines and success/warning markers.
+function prettifyLog(lines: string[]): string[] {
+  const out: string[] = [];
+  let skipHintBlock = false;
+  for (const raw of lines) {
+    const line = raw.replace(/\r$/, "");
+    const trimmed = line.trim();
+
+    // Drop ASCII frames like ┌─────┐ / └─────┘ / │ ... │ — replace the
+    // header inside │ ... │ with a clean styled section heading.
+    if (/^[┌└├┤┬┴┼─]+$/.test(trimmed)) continue;
+    const headerMatch = trimmed.match(/^│\s*(.+?)\s*│$/);
+    if (headerMatch) {
+      out.push(`## ${headerMatch[1]}`);
+      continue;
+    }
+
+    // PowerShell command hints / "что дальше" blocks — noise for end users.
+    if (/^Сменить прокси:/.test(trimmed)) {
+      skipHintBlock = true;
+      continue;
+    }
+    if (/^Проверить что прокси работает:/.test(trimmed)) {
+      skipHintBlock = true;
+      continue;
+    }
+    if (skipHintBlock) {
+      if (trimmed === "" || /^\s/.test(line)) continue;
+      skipHintBlock = false;
+    }
+
+    // .\claude-…-setup.ps1 lines — internal command hints.
+    if (/^\.\\claude-.+\.ps1/.test(trimmed)) continue;
+    // netstat hint.
+    if (/^netstat -an/.test(trimmed)) continue;
+    // Verbose "Что дальше:" + numbered instructions inside script — we have
+    // our own better next-actions on the success screen.
+    if (/^Что дальше:/.test(trimmed)) {
+      skipHintBlock = true;
+      continue;
+    }
+    // Empty lines collapse to one.
+    if (trimmed === "" && out[out.length - 1] === "") continue;
+
+    out.push(line);
+  }
+  // Trim leading/trailing empty lines.
+  while (out.length && out[0].trim() === "") out.shift();
+  while (out.length && out[out.length - 1].trim() === "") out.pop();
+  return out;
 }
 
 async function drainPending(ref: React.MutableRefObject<string[]>) {

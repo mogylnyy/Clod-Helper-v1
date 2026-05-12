@@ -7,6 +7,7 @@ import { StatusPill } from "../components/StatusPill";
 import { ActionCard } from "../components/ActionCard";
 import { Button } from "../components/Button";
 import { cn } from "../lib/cn";
+import { LogLine } from "./StepInstall";
 import type { InstallMode } from "../lib/types";
 
 interface Props {
@@ -210,15 +211,13 @@ export function SuccessScreen({
             className="overflow-hidden"
           >
             <div className="mt-4 rounded-xl border border-white/[0.04] bg-black/40 p-4">
-              <div className="max-h-[200px] overflow-y-auto font-mono text-[11px] leading-[1.6] text-vb-silver-dim">
+              <div className="max-h-[200px] overflow-y-auto pr-1">
                 {log.length === 0 ? (
-                  <div className="text-vb-silver-dim/60">Лог пуст.</div>
+                  <div className="font-mono text-[11px] text-vb-silver-dim/60">
+                    Лог пуст.
+                  </div>
                 ) : (
-                  log.map((line, i) => (
-                    <div key={i} className="whitespace-pre-wrap">
-                      {line}
-                    </div>
-                  ))
+                  log.map((line, i) => <LogLine key={i} line={line} />)
                 )}
               </div>
             </div>

@@ -39,6 +39,11 @@
     -moz-osx-font-smoothing: grayscale;
   }
 
+  html,
+  body {
+    overflow: hidden;
+  }
+
   * {
     box-sizing: border-box;
   }
@@ -58,6 +63,31 @@
 
   input::placeholder {
     color: var(--color-vb-silver-dim);
+  }
+
+  /* Vantablack scrollbar — thin, dark, only visible when scrolling. */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: rgba(255, 255, 255, 0.08) transparent;
+  }
+
+  *::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+  *::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  *::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.06);
+    border-radius: 999px;
+    transition: background 0.15s ease;
+  }
+  *::-webkit-scrollbar-thumb:hover {
+    background: rgba(255, 255, 255, 0.14);
+  }
+  *::-webkit-scrollbar-corner {
+    background: transparent;
   }
 }
 
