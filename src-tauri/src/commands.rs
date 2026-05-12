@@ -175,7 +175,17 @@ async fn run_ps_script(
     // CRITICAL: flag NAMES like "-ProxyUrl" must NOT be wrapped in single
     // quotes — PowerShell treats them as positional literals and parameter
     // binding to named args breaks. Quote only the VALUES.
-    let script_str = script.to_string_lossy().replace('\'', "''");
+    //
+    // Tauri's resource_dir() returns Windows UNC-extended paths like
+    // `\\?\C:\...`. PowerShell's `&` operator refuses those — strip the
+    // prefix so the script is invoked with a plain drive path.
+    let raw = script.to_string_lossy();
+    let cleaned = raw
+        .strip_prefix(r"\\?\UNC\")
+        .map(|s| format!(r"\\{s}"))
+        .or_else(|| raw.strip_prefix(r"\\?\").map(String::from))
+        .unwrap_or_else(|| raw.to_string());
+    let script_str = cleaned.replace('\'', "''");
     let mut tail = String::new();
     for a in args {
         if a.starts_with('-') {
