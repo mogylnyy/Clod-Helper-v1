@@ -234,37 +234,53 @@ $env:HTTP_PROXY = $ProxyUrl
 
 Write-Host "        Скачиваю с npm-registry (~30-90 секунд)..." -ForegroundColor DarkGray
 
+# Запускаем npm в фоне с захватом stdout/stderr в файлы. Не используем 2>&1
+# в pipe — npm с --loglevel=http пишет служебные строки в stderr, и под
+# $ErrorActionPreference='Continue' (наша обёртка) ConvertFrom-Json трактует
+# их как exceptions, что роняет catch несмотря на успешный exit-code.
+$npmOut = [System.IO.Path]::GetTempFileName()
+$npmErr = [System.IO.Path]::GetTempFileName()
 try {
-    # Стримим вывод npm в реальном времени — иначе скрипт молчит 1-2 минуты
-    # и юзер думает что зависло. --loglevel=http даёт периодические строки
-    # о ходе скачивания / распаковки.
-    & npm install -g "@anthropic-ai/claude-code" --loglevel=http 2>&1 | ForEach-Object {
-        $line = $_.ToString().Trim()
-        if ($line) {
-            # Сокращаем npm-шум до читаемых маркеров.
-            if ($line -match '^npm http fetch GET (\d+) https?://[^/]+/([^/]+/[^\s]+)') {
-                Write-Host "        ↓ скачиваю $($matches[2])" -ForegroundColor DarkGray
-            } elseif ($line -match '^added \d+ packages?') {
-                Write-Host "        ✓ $line" -ForegroundColor Green
-            } elseif ($line -match '^changed \d+ packages?') {
-                Write-Host "        ✓ $line" -ForegroundColor Green
-            } elseif ($line -match '^up to date') {
-                Write-Host "        ✓ уже последняя версия" -ForegroundColor Green
-            } elseif ($line -match '^npm (warn|WARN)') {
-                # пропускаем шум warning'ов
-            } elseif ($line -match '^npm (err|ERR)') {
-                Write-Host "        $line" -ForegroundColor Red
-            }
-            # Остальное (npm http 200, fetch, etc) тоже пропускаем чтоб не засорять журнал.
+    $proc = Start-Process -FilePath "npm.cmd" `
+        -ArgumentList @("install", "-g", "@anthropic-ai/claude-code", "--loglevel=http") `
+        -NoNewWindow -PassThru -Wait `
+        -RedirectStandardOutput $npmOut `
+        -RedirectStandardError $npmErr
+    $exitCode = $proc.ExitCode
+
+    # Парсим оба лога чтобы выдать сокращённые маркеры пользователю.
+    $allLines = @()
+    if (Test-Path $npmOut) { $allLines += Get-Content $npmOut -ErrorAction SilentlyContinue }
+    if (Test-Path $npmErr) { $allLines += Get-Content $npmErr -ErrorAction SilentlyContinue }
+    foreach ($line in $allLines) {
+        $line = $line.Trim()
+        if (-not $line) { continue }
+        if ($line -match '^npm http fetch GET 200 https?://[^/]+/([^\?]+)') {
+            Write-Host "        ↓ скачиваю $($matches[1])" -ForegroundColor DarkGray
+        } elseif ($line -match '^added \d+ packages?') {
+            Write-Host "        ✓ $line" -ForegroundColor Green
+        } elseif ($line -match '^changed \d+ packages?') {
+            Write-Host "        ✓ $line" -ForegroundColor Green
+        } elseif ($line -match '^up to date') {
+            Write-Host "        ✓ уже последняя версия" -ForegroundColor Green
+        } elseif ($line -match '^npm (err|ERR)') {
+            Write-Host "        $line" -ForegroundColor Red
         }
+        # Остальное пропускаем — http GET 304, fetch start, warn, etc.
     }
-    if ($LASTEXITCODE -ne 0) { throw "npm install exit code $LASTEXITCODE" }
+
+    if ($exitCode -ne 0) {
+        throw "npm exit code $exitCode (см. $npmErr)"
+    }
     Write-Ok "установлен"
 } catch {
     Write-Err "не удалось установить через npm"
     Write-Host "        Ошибка: $_" -ForegroundColor DarkGray
     Write-Host "        Попробуй вручную: npm install -g @anthropic-ai/claude-code" -ForegroundColor Yellow
     exit 1
+} finally {
+    Remove-Item $npmOut -Force -ErrorAction SilentlyContinue
+    Remove-Item $npmErr -Force -ErrorAction SilentlyContinue
 }
 
 # ─── Шаг 3: системные env-vars → локальный bridge ────────────────
