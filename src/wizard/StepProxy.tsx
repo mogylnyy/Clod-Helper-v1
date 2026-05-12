@@ -87,7 +87,20 @@ export function StepProxy({ proxy, check, onChange, onBack, onNext }: Props) {
         части.
       </p>
 
-      <div className="mt-7 glass-card p-6">
+      <button
+        type="button"
+        onClick={() =>
+          import("@tauri-apps/plugin-opener").then((m) =>
+            m.openUrl("https://proxy6.net/?r=692907"),
+          )
+        }
+        className="mt-3 inline-flex items-center gap-1.5 text-[12px] text-vb-silver-dim transition-colors hover:text-vb-silver"
+      >
+        Где купить прокси?
+        <span className="text-vb-emerald/80">proxy6.net →</span>
+      </button>
+
+      <div className="mt-5 glass-card p-6">
         <label className="block text-[11px] uppercase tracking-wider text-vb-silver-dim">
           URL прокси
         </label>

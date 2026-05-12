@@ -402,14 +402,19 @@ function prettifyLog(lines: string[]): string[] {
     const line = raw.replace(/\r$/, "");
     const trimmed = line.trim();
 
-    // Drop ASCII frames like ┌─────┐ / └─────┘ / │ ... │ — replace the
-    // header inside │ ... │ with a clean styled section heading.
-    if (/^[┌└├┤┬┴┼─]+$/.test(trimmed)) continue;
-    const headerMatch = trimmed.match(/^│\s*(.+?)\s*│$/);
-    if (headerMatch) {
-      out.push(`## ${headerMatch[1]}`);
+    // Drop ASCII frames. Note: PowerShell sometimes downgrades Unicode
+    // box-drawing chars (│ U+2502) to plain ASCII pipe (| U+007C) when
+    // streams pass through utf-8/cp866 conversion. So we accept both.
+    const isHorizontalBorder = /^[┌┐└┘├┤┬┴┼─\s]+$/.test(line) && /[┌┐└┘├┤┬┴┼─]/.test(line);
+    if (isHorizontalBorder) continue;
+
+    const vertMatch = trimmed.match(/^[│|]\s*(.+?)\s*[│|]$/);
+    if (vertMatch && vertMatch[1].trim().length > 0) {
+      out.push(`## ${vertMatch[1].trim()}`);
       continue;
     }
+    // Single dangling vertical bar with only whitespace — drop it.
+    if (/^[│|\s]+$/.test(line) && /[│|]/.test(line)) continue;
 
     // PowerShell command hints / "что дальше" blocks — noise for end users.
     if (/^Сменить прокси:/.test(trimmed)) {

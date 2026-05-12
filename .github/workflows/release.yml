@@ -1,0 +1,79 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            src-tauri/target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Install npm dependencies
+        run: npm ci
+
+      - name: Build Tauri app
+        run: npm run tauri build
+        env:
+          # Pin Tauri bundler to plain (no signing) since we publish unsigned.
+          TAURI_SIGNING_PRIVATE_KEY: ""
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
+
+      - name: Collect artifacts
+        shell: pwsh
+        run: |
+          $bundleDir = "src-tauri/target/release/bundle"
+          $out = "release-assets"
+          New-Item -ItemType Directory -Path $out -Force | Out-Null
+          Get-ChildItem -Path "$bundleDir/nsis/*-setup.exe" -ErrorAction SilentlyContinue |
+            ForEach-Object { Copy-Item $_.FullName $out }
+          Get-ChildItem $out
+
+      - name: Upload artifacts (workflow run)
+        uses: actions/upload-artifact@v4
+        with:
+          name: clod-helper-windows
+          path: release-assets/*
+
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release-assets/*
+          generate_release_notes: true
+          draft: false
+          prerelease: false
+          body: |
+            ## Установка
+
+            1. Скачайте `Clod_Helper_*_x64-setup.exe` ниже.
+            2. ПКМ → Свойства → «Разблокировать» → ОК.
+            3. Двойной клик. SmartScreen → «Подробнее» → «Выполнить в любом случае».
+            4. Установщик добавит ярлык. Запускайте.
+
+            Программа не подписана — Windows перестраховывается. Исходники открыты.

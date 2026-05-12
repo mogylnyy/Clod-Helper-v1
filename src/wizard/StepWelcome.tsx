@@ -38,6 +38,18 @@ export function StepWelcome({ onNext }: Props) {
             Поехали
           </Button>
         </div>
+
+        <button
+          type="button"
+          onClick={() =>
+            import("@tauri-apps/plugin-opener").then((m) =>
+              m.openUrl("https://proxy6.net/?r=692907"),
+            )
+          }
+          className="mt-6 text-[11px] text-vb-silver-dim/60 transition-colors hover:text-vb-silver-dim"
+        >
+          Ещё нет прокси? Берите на proxy6.net (поддержит проект)
+        </button>
       </div>
     </div>
   );
