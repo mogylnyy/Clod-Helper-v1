@@ -1,4 +1,4 @@
-use std::io::{BufRead, BufReader, Write};
+use std::io::Write;
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
 
@@ -276,6 +276,13 @@ async fn run_ps_script(
     log_line(log_file, &format!("[exec] {exec_repr}"));
     emit(app, format!("[exec] {exec_repr}"));
 
+    // Use synchronous full capture via .output() instead of streaming. Reason:
+    // when PowerShell finishes very quickly (e.g. fails on early validation),
+    // the streaming reader thread can be torn down before drainage completes,
+    // resulting in stdout_lines=1 / "empty" output despite real content. With
+    // .output() we get the entire stdout/stderr atomically AFTER the child
+    // exited — no race possible. Cost: no live-streaming progress; the user
+    // sees the full output as one block. Acceptable for ~2-3 second scripts.
     let app_clone = app.clone();
     let log_clone = log_file.clone();
     let result = tokio::task::spawn_blocking(move || -> Result<(), String> {
@@ -287,76 +294,42 @@ async fn run_ps_script(
             const CREATE_NO_WINDOW: u32 = 0x0800_0000;
             cmd.creation_flags(CREATE_NO_WINDOW);
         }
-        let mut child = cmd.spawn().map_err(|e| {
+
+        let output = cmd.output().map_err(|e| {
             let msg = format!("powershell.exe не запустился: {e}");
             log_line(&log_clone, &msg);
             msg
         })?;
 
-        let stdout_count = Arc::new(Mutex::new(0u64));
-        let stderr_count = Arc::new(Mutex::new(0u64));
+        // Windows PowerShell 5.1 outputs in OEM/UTF-16-with-BOM depending on
+        // console. Try UTF-8 first, then UTF-16 LE/BE, then fall back to lossy.
+        let stdout_text = decode_ps_output(&output.stdout);
+        let stderr_text = decode_ps_output(&output.stderr);
 
-        let stdout_handle = if let Some(stdout) = child.stdout.take() {
-            let app_inner = app_clone.clone();
-            let log_inner = log_clone.clone();
-            let count = stdout_count.clone();
-            Some(std::thread::spawn(move || {
-                let reader = BufReader::new(stdout);
-                for line in reader.lines().map_while(Result::ok) {
-                    if let Ok(mut n) = count.lock() {
-                        *n += 1;
-                    }
-                    log_line(&log_inner, &line);
-                    let _ = app_inner.emit("install:log", line);
-                }
-            }))
-        } else {
-            None
-        };
-
-        let stderr_handle = if let Some(stderr) = child.stderr.take() {
-            let app_inner = app_clone.clone();
-            let log_inner = log_clone.clone();
-            let count = stderr_count.clone();
-            Some(std::thread::spawn(move || {
-                let reader = BufReader::new(stderr);
-                for line in reader.lines().map_while(Result::ok) {
-                    if let Ok(mut n) = count.lock() {
-                        *n += 1;
-                    }
-                    let tagged = format!("[stderr] {line}");
-                    log_line(&log_inner, &tagged);
-                    let _ = app_inner.emit("install:log", tagged);
-                }
-            }))
-        } else {
-            None
-        };
-
-        let status = child.wait().map_err(|e| {
-            let msg = format!("Не получилось дождаться скрипта: {e}");
-            log_line(&log_clone, &msg);
-            msg
-        })?;
-
-        if let Some(h) = stdout_handle {
-            let _ = h.join();
+        let mut n_out: u64 = 0;
+        for line in stdout_text.lines() {
+            n_out += 1;
+            log_line(&log_clone, line);
+            let _ = app_clone.emit("install:log", line.to_string());
         }
-        if let Some(h) = stderr_handle {
-            let _ = h.join();
+        let mut n_err: u64 = 0;
+        for line in stderr_text.lines() {
+            n_err += 1;
+            let tagged = format!("[stderr] {line}");
+            log_line(&log_clone, &tagged);
+            let _ = app_clone.emit("install:log", tagged);
         }
 
-        let n_out = stdout_count.lock().map(|g| *g).unwrap_or(0);
-        let n_err = stderr_count.lock().map(|g| *g).unwrap_or(0);
-        let code = status.code().unwrap_or(-1);
-
+        let code = output.status.code().unwrap_or(-1);
         let summary = format!(
-            "[exit] code={code}, stdout_lines={n_out}, stderr_lines={n_err}"
+            "[exit] code={code}, stdout_lines={n_out}, stderr_lines={n_err}, stdout_bytes={}, stderr_bytes={}",
+            output.stdout.len(),
+            output.stderr.len()
         );
         log_line(&log_clone, &summary);
         let _ = app_clone.emit("install:log", summary);
 
-        if status.success() {
+        if output.status.success() {
             Ok(())
         } else {
             Err(format!(
@@ -368,4 +341,40 @@ async fn run_ps_script(
     .map_err(|e| format!("Внутренняя ошибка: {e}"))?;
 
     result
+}
+
+fn decode_ps_output(bytes: &[u8]) -> String {
+    if bytes.is_empty() {
+        return String::new();
+    }
+    // UTF-16 LE BOM
+    if bytes.len() >= 2 && bytes[0] == 0xFF && bytes[1] == 0xFE {
+        let u16s: Vec<u16> = bytes[2..]
+            .chunks_exact(2)
+            .map(|c| u16::from_le_bytes([c[0], c[1]]))
+            .collect();
+        return String::from_utf16_lossy(&u16s);
+    }
+    // UTF-16 BE BOM
+    if bytes.len() >= 2 && bytes[0] == 0xFE && bytes[1] == 0xFF {
+        let u16s: Vec<u16> = bytes[2..]
+            .chunks_exact(2)
+            .map(|c| u16::from_be_bytes([c[0], c[1]]))
+            .collect();
+        return String::from_utf16_lossy(&u16s);
+    }
+    // UTF-8 BOM
+    if bytes.len() >= 3 && bytes[0] == 0xEF && bytes[1] == 0xBB && bytes[2] == 0xBF {
+        return String::from_utf8_lossy(&bytes[3..]).into_owned();
+    }
+    // Heuristic: lots of zero bytes → UTF-16 LE without BOM
+    let zeros = bytes.iter().take(40).filter(|b| **b == 0).count();
+    if zeros >= 10 {
+        let u16s: Vec<u16> = bytes
+            .chunks_exact(2)
+            .map(|c| u16::from_le_bytes([c[0], c[1]]))
+            .collect();
+        return String::from_utf16_lossy(&u16s);
+    }
+    String::from_utf8_lossy(bytes).into_owned()
 }
