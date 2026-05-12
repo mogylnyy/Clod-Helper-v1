@@ -27,12 +27,19 @@ export function StepInstall({ mode, proxyUrl, onBack, onDone }: Props) {
 
   useEffect(() => {
     let unlistenLog: UnlistenFn | null = null;
+    let cancelled = false;
     (async () => {
-      unlistenLog = await listen<string>("install:log", (e) => {
+      const u = await listen<string>("install:log", (e) => {
         setLog((prev) => [...prev, e.payload]);
       });
+      if (cancelled) {
+        u();
+      } else {
+        unlistenLog = u;
+      }
     })();
     return () => {
+      cancelled = true;
       unlistenLog?.();
     };
   }, []);

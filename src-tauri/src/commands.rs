@@ -245,34 +245,43 @@ async fn run_ps_script(
         .or_else(|| raw.strip_prefix(r"\\?\").map(String::from))
         .unwrap_or_else(|| raw.to_string());
 
-    // Use -File mode (the script is in our trusted bundle). Args pass through
-    // natively, no quoting dance with `-Command`. `Write-Host` would normally
-    // bypass stdout, but we wrap the invocation with $InformationPreference=
-    // Continue + 4>&1 *>&1 inside -Command... actually -Command is what bit
-    // us last time. Trick: redirect host output by also using -OutputFormat
-    // Text and piping host stream through Tee-Object... too much.
-    //
-    // Simpler approach that ACTUALLY works in CREATE_NO_WINDOW spawn: run
-    // with -File, and rely on the fact that our scripts use Write-Host which
-    // PowerShell 5.1 directs to the information stream — and since 5.1
-    // launched without a real host, that stream IS written to stdout.
+    // Use -Command with a UTF-8 prelude so Cyrillic Write-Host output isn't
+    // mangled to OEM (cp866) when there's no real console host attached.
+    // We escape the script path and only quote VALUE args (flag names like
+    // -ProxyUrl must remain bare or PowerShell binds them positionally).
+    let script_escaped = cleaned.replace('\'', "''");
+    let mut tail = String::new();
+    for a in args {
+        if a.starts_with('-') {
+            tail.push(' ');
+            tail.push_str(a);
+        } else {
+            let escaped = a.replace('\'', "''");
+            tail.push_str(&format!(" '{escaped}'"));
+        }
+    }
+    let command_line = format!(
+        "[Console]::OutputEncoding=[System.Text.Encoding]::UTF8; \
+         $OutputEncoding=[System.Text.Encoding]::UTF8; \
+         $ErrorActionPreference='Continue'; \
+         & '{script_escaped}'{tail}; \
+         exit $LASTEXITCODE"
+    );
+
     let mut ps_args: Vec<String> = vec![
         "-NoProfile".into(),
         "-NonInteractive".into(),
         "-ExecutionPolicy".into(),
         "Bypass".into(),
-        "-File".into(),
-        cleaned.clone(),
+        "-OutputFormat".into(),
+        "Text".into(),
+        "-Command".into(),
+        command_line.clone(),
     ];
-    for a in args {
-        ps_args.push((*a).to_string());
-    }
+    // Avoid unused warning if future refactor drops args.
+    let _ = &mut ps_args;
 
-    let exec_repr = format!(
-        "powershell.exe -File '{}' {}",
-        cleaned,
-        args.join(" ")
-    );
+    let exec_repr = format!("powershell.exe -Command {command_line}");
     log_line(log_file, &format!("[exec] {exec_repr}"));
     emit(app, format!("[exec] {exec_repr}"));
 
@@ -347,34 +356,15 @@ fn decode_ps_output(bytes: &[u8]) -> String {
     if bytes.is_empty() {
         return String::new();
     }
-    // UTF-16 LE BOM
-    if bytes.len() >= 2 && bytes[0] == 0xFF && bytes[1] == 0xFE {
-        let u16s: Vec<u16> = bytes[2..]
-            .chunks_exact(2)
-            .map(|c| u16::from_le_bytes([c[0], c[1]]))
-            .collect();
-        return String::from_utf16_lossy(&u16s);
-    }
-    // UTF-16 BE BOM
-    if bytes.len() >= 2 && bytes[0] == 0xFE && bytes[1] == 0xFF {
-        let u16s: Vec<u16> = bytes[2..]
-            .chunks_exact(2)
-            .map(|c| u16::from_be_bytes([c[0], c[1]]))
-            .collect();
-        return String::from_utf16_lossy(&u16s);
-    }
     // UTF-8 BOM
-    if bytes.len() >= 3 && bytes[0] == 0xEF && bytes[1] == 0xBB && bytes[2] == 0xBF {
-        return String::from_utf8_lossy(&bytes[3..]).into_owned();
-    }
-    // Heuristic: lots of zero bytes → UTF-16 LE without BOM
-    let zeros = bytes.iter().take(40).filter(|b| **b == 0).count();
-    if zeros >= 10 {
-        let u16s: Vec<u16> = bytes
-            .chunks_exact(2)
-            .map(|c| u16::from_le_bytes([c[0], c[1]]))
-            .collect();
-        return String::from_utf16_lossy(&u16s);
-    }
-    String::from_utf8_lossy(bytes).into_owned()
+    let payload = if bytes.len() >= 3
+        && bytes[0] == 0xEF
+        && bytes[1] == 0xBB
+        && bytes[2] == 0xBF
+    {
+        &bytes[3..]
+    } else {
+        bytes
+    };
+    String::from_utf8_lossy(payload).into_owned()
 }
