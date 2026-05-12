@@ -20,6 +20,8 @@ pub fn run() {
             commands::parse_proxy,
             commands::check_proxy,
             commands::run_install,
+            commands::launch_claude_desktop,
+            commands::launch_claude_code,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

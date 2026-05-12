@@ -14,6 +14,74 @@ pub fn detect_node() -> NodeInfo {
 }
 
 #[tauri::command]
+pub fn launch_claude_desktop() -> Result<(), String> {
+    // Prefer the shortcut we created on desktop — it carries the
+    // --proxy-server flag. If the user deleted it, fall back to launching
+    // Claude.exe directly out of the MSIX install location.
+    let userprofile = std::env::var("USERPROFILE")
+        .map_err(|e| format!("USERPROFILE не задан: {e}"))?;
+    let shortcut = std::path::PathBuf::from(&userprofile)
+        .join("Desktop")
+        .join("Claude Desktop (proxy).lnk");
+
+    if shortcut.exists() {
+        let mut cmd = Command::new("cmd");
+        cmd.args(["/c", "start", "", shortcut.to_str().unwrap_or("")]);
+        #[cfg(target_os = "windows")]
+        {
+            use std::os::windows::process::CommandExt;
+            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+            cmd.creation_flags(CREATE_NO_WINDOW);
+        }
+        cmd.spawn().map_err(|e| format!("Не удалось запустить ярлык: {e}"))?;
+        return Ok(());
+    }
+
+    // Fallback: launch via shell:AppsFolder (MSIX activation).
+    let mut cmd = Command::new("cmd");
+    cmd.args([
+        "/c",
+        "start",
+        "",
+        "shell:AppsFolder\\Claude_pzs8sxrjxfjjc!Claude",
+    ]);
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    cmd.spawn()
+        .map_err(|e| format!("Не удалось запустить Claude Desktop: {e}"))?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn launch_claude_code() -> Result<(), String> {
+    // Open a new Windows Terminal (preferred) or PowerShell window with
+    // `claude` ready to run. Detached so it survives our app's lifetime.
+    let try_wt = Command::new("cmd")
+        .args(["/c", "start", "", "wt", "powershell", "-NoExit", "-Command", "claude"])
+        .spawn();
+    if try_wt.is_ok() {
+        return Ok(());
+    }
+    Command::new("cmd")
+        .args([
+            "/c",
+            "start",
+            "",
+            "powershell",
+            "-NoExit",
+            "-Command",
+            "claude",
+        ])
+        .spawn()
+        .map_err(|e| format!("Не удалось открыть терминал: {e}"))?;
+    Ok(())
+}
+
+#[tauri::command]
 pub fn detect_python() -> PythonInfo {
     system::detect_python()
 }

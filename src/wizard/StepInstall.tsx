@@ -4,19 +4,17 @@ import { AnimatePresence, motion } from "framer-motion";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import {
   Loader2,
-  CheckCircle2,
   XCircle,
   Terminal as TerminalIcon,
   ChevronDown,
   ChevronRight,
   Download,
-  AlertTriangle,
-  ArrowRight,
 } from "lucide-react";
 import { Button } from "../components/Button";
 import type { InstallMode } from "../lib/types";
 import { runInstall } from "../lib/api";
 import { cn } from "../lib/cn";
+import { SuccessScreen } from "./SuccessScreen";
 
 const VERBOSE_PREFIX = "__verbose__:";
 // How long between revealing successive log lines (ms). Lower = faster
@@ -43,7 +41,7 @@ export function StepInstall({
   mode,
   proxyUrl,
   onBack,
-  onDone,
+  onDone: _onDone,
   onRestartWithCode,
 }: Props) {
   const [status, setStatus] = useState<Status>("idle");
@@ -164,13 +162,27 @@ export function StepInstall({
     }
   }
 
+  // Success state — completely separate visual layout (no header / log dump).
+  if (status === "done") {
+    const allLogLines = revealed.map((l) =>
+      l.startsWith(VERBOSE_PREFIX) ? l.slice(VERBOSE_PREFIX.length) : l,
+    );
+    return (
+      <SuccessScreen
+        mode={mode}
+        log={allLogLines}
+        onBack={onBack}
+        onInstallCodeToo={onRestartWithCode}
+      />
+    );
+  }
+
   return (
     <div className="mx-auto max-w-2xl pt-4">
       <h2 className="text-[22px] font-semibold tracking-tight text-vb-silver">
         {status === "idle" && "Готовы поставить?"}
         {status === "running" && "Устанавливаем Claude…"}
-        {status === "awaiting-desktop" && "Нужен Claude Desktop"}
-        {status === "done" && "Готово"}
+        {status === "awaiting-desktop" && "Остался один шаг"}
         {status === "error" && "Что-то пошло не так"}
       </h2>
       <p className="mt-1.5 text-[13px] text-vb-silver-dim">
@@ -179,9 +191,7 @@ export function StepInstall({
         {status === "running" &&
           "Может возникнуть запрос от Windows — разрешите."}
         {status === "awaiting-desktop" &&
-          "Прокси-мост уже запущен. Осталось установить само приложение Claude Desktop и мы создадим ярлык."}
-        {status === "done" &&
-          "Claude настроен и готов к работе. Если прокси перестанет работать — переустановите и введите новый."}
+          "Подключение настроено. Осталось установить само приложение Claude — и мы добавим ярлык на рабочий стол."}
       </p>
 
       {status === "idle" && (
@@ -193,7 +203,6 @@ export function StepInstall({
       )}
 
       {(status === "running" ||
-        status === "done" ||
         status === "error" ||
         status === "awaiting-desktop") && (
         <div className="mt-6 glass-card overflow-hidden">
@@ -299,75 +308,34 @@ export function StepInstall({
           initial={{ opacity: 0, y: 6 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.25 }}
-          className="mt-5 rounded-2xl border border-vb-warn/40 bg-vb-warn/5 p-5"
+          className="mt-5 overflow-hidden rounded-2xl border border-white/[0.06] bg-[rgba(10,10,10,0.55)] backdrop-blur-2xl"
         >
-          <div className="flex items-start gap-3">
-            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-vb-warn/15 text-vb-warn">
-              <AlertTriangle className="h-5 w-5" strokeWidth={1.5} />
+          <div className="border-l-2 border-vb-silver/40 px-6 py-5">
+            <div className="text-[15px] font-medium tracking-tight text-vb-silver">
+              Скачайте Claude
             </div>
-            <div className="flex-1">
-              <div className="text-[15px] font-medium text-vb-silver">
-                Claude Desktop не установлен
-              </div>
-              <p className="mt-1 text-[13px] leading-relaxed text-vb-silver-dim">
-                Скачайте Claude Desktop с официального сайта и установите. Когда
-                закончите — нажмите «Продолжить», мы создадим ярлык «Claude
-                Desktop (proxy)» на рабочем столе.
-              </p>
-              <div className="mt-4 flex flex-wrap items-center gap-3">
-                <Button
-                  variant="secondary"
-                  onClick={() => openUrl("https://claude.ai/download")}
-                >
-                  <Download className="h-4 w-4" />
-                  Скачать Claude Desktop
-                </Button>
-                <Button onClick={handleContinueAfterDesktopInstall}>
-                  Продолжить
-                </Button>
-              </div>
+            <p className="mt-2 max-w-md text-[13px] leading-relaxed text-vb-silver-dim">
+              Claude Desktop — официальное приложение от Anthropic. Скачайте
+              его и установите как обычную программу. Когда закончите —
+              вернитесь сюда, мы добавим ярлык.
+            </p>
+            <div className="mt-4 flex flex-wrap items-center gap-3">
+              <Button
+                onClick={() => openUrl("https://claude.ai/download")}
+              >
+                <Download className="h-4 w-4" />
+                Скачать с сайта Anthropic
+              </Button>
+              <button
+                type="button"
+                onClick={handleContinueAfterDesktopInstall}
+                className="text-[13px] font-medium text-vb-silver-dim transition-colors hover:text-vb-silver"
+              >
+                Я установил →
+              </button>
             </div>
           </div>
         </motion.div>
-      )}
-
-      {status === "done" && (mode === "code" || mode === "both") && (
-        <div className="mt-5 flex items-start gap-2 rounded-lg border border-vb-emerald/30 bg-vb-emerald/5 px-4 py-3 text-[13px] text-vb-silver">
-          <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-vb-emerald" />
-          <div>
-            Откройте новый терминал и введите{" "}
-            <code className="rounded bg-vb-bg px-1.5 py-0.5 font-mono text-vb-emerald">
-              claude
-            </code>
-            . Должна появиться приветственная строка.
-          </div>
-        </div>
-      )}
-
-      {status === "done" && mode === "desktop" && (
-        <>
-          <div className="mt-5 flex items-start gap-2 rounded-lg border border-vb-emerald/30 bg-vb-emerald/5 px-4 py-3 text-[13px] text-vb-silver">
-            <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-vb-emerald" />
-            <div>
-              Bridge запущен на{" "}
-              <code className="rounded bg-vb-bg px-1.5 py-0.5 font-mono text-vb-emerald">
-                127.0.0.1:8889
-              </code>
-              . Запускайте Claude Desktop через ярлык «Claude Desktop (proxy)»
-              с рабочего стола.
-            </div>
-          </div>
-          {onRestartWithCode && (
-            <button
-              type="button"
-              onClick={onRestartWithCode}
-              className="mt-3 inline-flex items-center gap-1.5 text-[12px] text-vb-silver-dim transition-colors hover:text-vb-silver"
-            >
-              Поставить Claude в терминале тоже
-              <ArrowRight className="h-3 w-3" />
-            </button>
-          )}
-        </>
       )}
 
       <div className="mt-8 flex items-center justify-between">
@@ -378,7 +346,6 @@ export function StepInstall({
         >
           Назад
         </Button>
-        {status === "done" && <Button onClick={onDone}>Закрыть</Button>}
         {status === "error" && (
           <Button variant="secondary" onClick={handleStart}>
             Повторить
